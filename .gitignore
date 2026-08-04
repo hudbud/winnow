@@ -1,0 +1,15 @@
+# XcodeGen-generated project (run `xcodegen generate` after clone)
+ImageSort/ImageSort.xcodeproj/
+ImageSort/Generated/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.build/
+
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json

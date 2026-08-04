@@ -1,0 +1,33 @@
+{
+  "identifier" : "5C9F1A2B-6E3D-4B8A-9C1E-2F7A8D6B4C10",
+  "nonRenewingSubscriptions" : [],
+  "products" : [
+    {
+      "displayPrice" : "4.99",
+      "familyShareable" : false,
+      "internalID" : "unlockExtendedRatings",
+      "localizations" : [
+        {
+          "description" : "Unlock sorting beyond ★3 — refine all the way to ★5.",
+          "displayName" : "Unlock Extended Ratings",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.hudsonpaine.ImageSort.unlockExtendedRatings",
+      "referenceName" : "Unlock Extended Ratings",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "0",
+    "_developerTeamID" : "9FZB4GGWZJ",
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_US"
+  },
+  "subscriptionGroups" : [],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}
