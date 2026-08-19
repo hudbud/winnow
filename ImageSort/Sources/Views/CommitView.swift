@@ -13,23 +13,14 @@ struct CommitView: View {
     @State private var isWorking = false
     @State private var statusMessage: String?
     @State private var showDeleteConfirmation = false
+    @State private var ratingCache: [String: Int] = [:]
+    @State private var discardedAssets: [PHAsset] = []
+    @State private var topTierAssets: [PHAsset] = []
 
     private let library = PhotoLibraryService.shared
 
     private func rating(_ assetIdentifier: String) -> Int {
-        var descriptor = FetchDescriptor<PhotoRating>(
-            predicate: #Predicate { $0.assetIdentifier == assetIdentifier }
-        )
-        descriptor.fetchLimit = 1
-        return (try? context.fetch(descriptor))?.first?.rating ?? 0
-    }
-
-    private var discardedAssets: [PHAsset] {
-        allAssets.filter { rating($0.localIdentifier) == 0 }
-    }
-
-    private var topTierAssets: [PHAsset] {
-        allAssets.filter { rating($0.localIdentifier) >= 5 }
+        ratingCache[assetIdentifier] ?? 0
     }
 
     var body: some View {
@@ -72,6 +63,7 @@ struct CommitView: View {
             }
         }
         .navigationTitle("Finish Up")
+        .onAppear { loadRatings() }
         .confirmationDialog(
             "Delete \(discardedAssets.count) photos?",
             isPresented: $showDeleteConfirmation,
@@ -82,6 +74,21 @@ struct CommitView: View {
         } message: {
             Text("They'll move to Recently Deleted in Photos.")
         }
+    }
+
+    private func loadRatings() {
+        // Load all ratings once, not per-photo per-render. Same approach as SwipeDeckViewModel.
+        let descriptor = FetchDescriptor<PhotoRating>()
+        let allRows = (try? context.fetch(descriptor)) ?? []
+        let identifiers = Set(allAssets.map(\.localIdentifier))
+        ratingCache = Dictionary(
+            uniqueKeysWithValues: allRows
+                .filter { identifiers.contains($0.assetIdentifier) }
+                .map { ($0.assetIdentifier, $0.rating) }
+        )
+        // Compute the filtered groups once
+        discardedAssets = allAssets.filter { rating($0.localIdentifier) == 0 }
+        topTierAssets = allAssets.filter { rating($0.localIdentifier) >= 5 }
     }
 
     private func assetsAtOrAbove(_ tier: Int) -> [PHAsset] {

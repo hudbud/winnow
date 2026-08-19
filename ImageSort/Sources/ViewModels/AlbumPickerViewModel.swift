@@ -3,6 +3,7 @@ import Photos
 import SwiftData
 
 @Observable
+@MainActor
 final class AlbumPickerViewModel {
     private(set) var albums: [AlbumInfo] = []
     private(set) var isLoading = false
@@ -28,10 +29,13 @@ final class AlbumPickerViewModel {
             let fetched = await Task.detached(priority: .userInitiated) {
                 PhotoLibraryService.shared.fetchAlbums()
             }.value
-            albums = fetched
-            let sessions = (try? context.fetch(FetchDescriptor<Session>())) ?? []
-            sessionsByAlbumID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.collectionIdentifier, $0) })
-            isLoading = false
+            // Back on main actor for SwiftUI state mutation and ModelContext access
+            await MainActor.run {
+                albums = fetched
+                let sessions = (try? context.fetch(FetchDescriptor<Session>())) ?? []
+                sessionsByAlbumID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.collectionIdentifier, $0) })
+                isLoading = false
+            }
         }
     }
 

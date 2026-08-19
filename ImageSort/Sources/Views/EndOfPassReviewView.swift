@@ -19,6 +19,7 @@ struct EndOfPassReviewView: View {
     /// Independent of the pass boundary — purely a viewing/export filter.
     /// 0 means "all photos in the album", 1...5 means "rating >= threshold".
     @State private var displayThreshold: Int
+    @State private var filteredAssets: [PHAsset] = []
 
     private let library = PhotoLibraryService.shared
     private let columns = [GridItem(.adaptive(minimum: 90), spacing: 6)]
@@ -27,11 +28,6 @@ struct EndOfPassReviewView: View {
         self.viewModel = viewModel
         self.context = context
         _displayThreshold = State(initialValue: viewModel.pass + 1)
-    }
-
-    private var filteredAssets: [PHAsset] {
-        guard displayThreshold > 0 else { return viewModel.allAssets }
-        return viewModel.allAssets.filter { viewModel.effectiveRating($0.localIdentifier) >= displayThreshold }
     }
 
     private var thresholdDescription: String {
@@ -67,7 +63,10 @@ struct EndOfPassReviewView: View {
                         SurvivorThumbnail(asset: asset, storedRating: viewModel.storedRating(asset.localIdentifier), pass: viewModel.pass, library: library)
                             .onTapGesture {
                                 guard canToggleFromGrid else { return }
-                                withAnimation { viewModel.toggleSurvivor(asset) }
+                                withAnimation {
+                                    viewModel.toggleSurvivor(asset)
+                                    refreshFilteredAssets()
+                                }
                             }
                     }
                 }
@@ -112,6 +111,8 @@ struct EndOfPassReviewView: View {
         .background(Color.black.ignoresSafeArea())
         .foregroundStyle(.white)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { refreshFilteredAssets() }
+        .onChange(of: displayThreshold) { _, _ in refreshFilteredAssets() }
         .navigationDestination(isPresented: $showNextPass) {
             SwipeDeckView(session: viewModel.session, allAssets: viewModel.allAssets, context: context)
         }
@@ -123,6 +124,16 @@ struct EndOfPassReviewView: View {
         }
         .sheet(isPresented: $showUnlock) {
             UnlockView()
+        }
+    }
+
+    private func refreshFilteredAssets() {
+        guard displayThreshold > 0 else {
+            filteredAssets = viewModel.allAssets
+            return
+        }
+        filteredAssets = viewModel.allAssets.filter {
+            viewModel.effectiveRating($0.localIdentifier) >= displayThreshold
         }
     }
 
@@ -184,7 +195,9 @@ struct EndOfPassReviewView: View {
                         Image(systemName: star <= displayThreshold ? "star.fill" : "star")
                             .font(.title3)
                             .foregroundStyle(star <= displayThreshold ? .yellow : .white.opacity(0.4))
-                            .onTapGesture { displayThreshold = star }
+                            .onTapGesture {
+                                displayThreshold = star
+                            }
                     }
                 }
             }
