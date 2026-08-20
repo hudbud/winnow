@@ -17,7 +17,7 @@ private enum DeckTheme {
 
 struct SwipeDeckView: View {
     @Environment(\.modelContext) private var context
-    @State private var viewModel: SwipeDeckViewModel
+    @State private var viewModel: SwipeDeckViewModel?
 
     @State private var dragOffset: CGSize = .zero
     @State private var showReview = false
@@ -26,29 +26,67 @@ struct SwipeDeckView: View {
     @State private var showRatingPicker = false
     @State private var showUnlock = false
     @State private var entitlements = EntitlementStore.shared
+    @State private var isCommittingSwipe = false
 
+    private let session: Session
+    private let allAssets: [PHAsset]
     private let library = PhotoLibraryService.shared
     private let swipeThreshold: CGFloat = 120
+    private let hapticFeedback = UIImpactFeedbackGenerator(style: .medium)
 
     init(session: Session, allAssets: [PHAsset], context: ModelContext) {
-        _viewModel = State(initialValue: SwipeDeckViewModel(session: session, allAssets: allAssets, library: .shared, context: context))
+        self.session = session
+        self.allAssets = allAssets
     }
 
     var body: some View {
+        Group {
+            if let viewModel {
+                deckContent(viewModel: viewModel)
+            } else {
+                ProgressView()
+                    .tint(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.ignoresSafeArea())
+            }
+        }
+        .onAppear {
+            hapticFeedback.prepare()
+            if viewModel == nil {
+                Task {
+                    let vm = await SwipeDeckViewModel.create(
+                        session: session,
+                        allAssets: allAssets,
+                        library: library,
+                        context: context
+                    )
+                    viewModel = vm
+                    // Check if pass was already complete
+                    if vm.isPassComplete { showReview = true }
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            viewModel?.handleMemoryWarning()
+        }
+    }
+
+    @ViewBuilder
+    private func deckContent(viewModel: SwipeDeckViewModel) -> some View {
         VStack(spacing: 16) {
-            header
+            header(viewModel: viewModel)
 
             ZStack {
                 // Stable per-asset identity, ordered back-to-front, so a card never
                 // inherits another photo's in-flight drag state — the next card is
                 // always already sitting in place underneath, just revealed.
-                ForEach(Array(stackAssets.enumerated().reversed()), id: \.element.localIdentifier) { position, asset in
-                    cardView(for: asset, position: position)
+                ForEach(Array(stackAssets(viewModel: viewModel).enumerated().reversed()), id: \.element.localIdentifier) { position, asset in
+                    cardView(for: asset, position: position, viewModel: viewModel)
                 }
             }
             .padding(.horizontal, 20)
 
-            controls
+            controls(viewModel: viewModel)
         }
         .padding(.bottom, 20)
         .background(theme.background.ignoresSafeArea())
@@ -60,6 +98,7 @@ struct SwipeDeckView: View {
                 } label: {
                     Image(systemName: "arrow.uturn.backward.circle")
                 }
+                .accessibilityLabel("Undo last swipe")
                 .disabled(!viewModel.canUndo)
                 .opacity(viewModel.canUndo ? 1 : 0.3)
                 .foregroundStyle(theme.foreground)
@@ -71,12 +110,14 @@ struct SwipeDeckView: View {
                     } label: {
                         Image(systemName: autoplayLivePhotos ? "livephoto" : "livephoto.slash")
                     }
+                    .accessibilityLabel(autoplayLivePhotos ? "Disable Live Photo autoplay" : "Enable Live Photo autoplay")
 
                     Button {
                         theme.toggle()
                     } label: {
                         Image(systemName: theme.icon)
                     }
+                    .accessibilityLabel(theme == .dark ? "Switch to light mode" : "Switch to dark mode")
                 }
                 .foregroundStyle(theme.foreground)
             }
@@ -87,19 +128,15 @@ struct SwipeDeckView: View {
         .onChange(of: viewModel.isPassComplete) { _, complete in
             if complete { showReview = true }
         }
-        .onAppear {
-            // Resuming a session where the pass was already finished (e.g. the app
-            // was killed before the review screen navigation happened) — onChange
-            // alone won't fire since isPassComplete hasn't *changed* since mount.
-            if viewModel.isPassComplete { showReview = true }
-        }
         .navigationDestination(isPresented: $showReview) {
-            EndOfPassReviewView(viewModel: viewModel, context: context)
+            if let viewModel {
+                EndOfPassReviewView(viewModel: viewModel, context: context)
+            }
         }
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var header: some View {
+    private func header(viewModel: SwipeDeckViewModel) -> some View {
         VStack(spacing: 10) {
             Text("Pass \(viewModel.pass) → \(viewModel.pass + 1)")
                 .font(.headline)
@@ -110,34 +147,34 @@ struct SwipeDeckView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { showRatingPicker = true }
                     .popover(isPresented: $showRatingPicker) {
-                        ratingPicker(for: topAsset)
+                        ratingPicker(for: topAsset, viewModel: viewModel)
                             .presentationCompactAdaptation(.popover)
                     }
             }
 
-            ProgressView(value: progressValue)
+            ProgressView(value: progressValue(viewModel: viewModel))
                 .tint(theme.foreground)
                 .padding(.horizontal, 20)
         }
         .padding(.top, 8)
     }
 
-    private func ratingPicker(for asset: PHAsset) -> some View {
+    private func ratingPicker(for asset: PHAsset, viewModel: SwipeDeckViewModel) -> some View {
         HStack(spacing: 16) {
             Button("None") {
-                setManualRating(0, on: asset)
+                setManualRating(0, on: asset, viewModel: viewModel)
                 showRatingPicker = false
             }
             .font(.subheadline.weight(.semibold))
 
             ForEach(1...5, id: \.self) { star in
-                starIcon(star, for: asset)
+                starIcon(star, for: asset, viewModel: viewModel)
             }
         }
         .padding(20)
     }
 
-    private func starIcon(_ star: Int, for asset: PHAsset) -> some View {
+    private func starIcon(_ star: Int, for asset: PHAsset, viewModel: SwipeDeckViewModel) -> some View {
         let isLocked = star > EntitlementStore.freeStarCap && !entitlements.isUnlocked
         let isFilled = star <= (viewModel.storedRating(asset.localIdentifier) ?? 0)
         let symbolName: String = isLocked ? "lock.fill" : (isFilled ? "star.fill" : "star")
@@ -150,24 +187,24 @@ struct SwipeDeckView: View {
                     showRatingPicker = false
                     showUnlock = true
                 } else {
-                    setManualRating(star, on: asset)
+                    setManualRating(star, on: asset, viewModel: viewModel)
                     showRatingPicker = false
                 }
             }
     }
 
-    private var progressValue: Double {
+    private func progressValue(viewModel: SwipeDeckViewModel) -> Double {
         guard viewModel.totalInPass > 0 else { return 1 }
         let done = viewModel.totalInPass - viewModel.remainingCount
         return Double(done) / Double(viewModel.totalInPass)
     }
 
-    private var stackAssets: [PHAsset] {
+    private func stackAssets(viewModel: SwipeDeckViewModel) -> [PHAsset] {
         Array(viewModel.queue.prefix(3))
     }
 
     @ViewBuilder
-    private func cardView(for asset: PHAsset, position: Int) -> some View {
+    private func cardView(for asset: PHAsset, position: Int, viewModel: SwipeDeckViewModel) -> some View {
         let isTop = position == 0
         let depth = min(position, 2)
 
@@ -198,7 +235,7 @@ struct SwipeDeckView: View {
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
                 .overlay(alignment: .topLeading) { stampOverlay(direction: .keep) }
                 .overlay(alignment: .topTrailing) { stampOverlay(direction: .pass) }
-                .gesture(dragGesture(for: asset))
+                .gesture(dragGesture(for: asset, viewModel: viewModel))
         } else {
             card
                 .animation(.easeOut(duration: 0.2), value: depth)
@@ -206,7 +243,7 @@ struct SwipeDeckView: View {
         }
     }
 
-    private var controls: some View {
+    private func controls(viewModel: SwipeDeckViewModel) -> some View {
         HStack(spacing: 20) {
             navButton(systemName: "arrow.left", enabled: viewModel.canNavigateBack) {
                 viewModel.navigateBack()
@@ -215,7 +252,7 @@ struct SwipeDeckView: View {
             Spacer(minLength: 8)
 
             Button {
-                withAnimation { commit(.pass) }
+                withAnimation { commit(.pass, viewModel: viewModel) }
             } label: {
                 Image(systemName: "xmark")
                     .font(.title.weight(.bold))
@@ -223,10 +260,11 @@ struct SwipeDeckView: View {
                     .frame(width: 60, height: 60)
                     .background(.red.opacity(0.85), in: Circle())
             }
-            .disabled(viewModel.topAsset == nil)
+            .accessibilityLabel("Pass on this photo")
+            .disabled(viewModel.topAsset == nil || isCommittingSwipe)
 
             Button {
-                withAnimation { commit(.keep) }
+                withAnimation { commit(.keep, viewModel: viewModel) }
             } label: {
                 Image(systemName: "checkmark")
                     .font(.title.weight(.bold))
@@ -234,7 +272,8 @@ struct SwipeDeckView: View {
                     .frame(width: 60, height: 60)
                     .background(.green.opacity(0.85), in: Circle())
             }
-            .disabled(viewModel.topAsset == nil)
+            .accessibilityLabel("Keep this photo")
+            .disabled(viewModel.topAsset == nil || isCommittingSwipe)
 
             Spacer(minLength: 8)
 
@@ -248,13 +287,15 @@ struct SwipeDeckView: View {
     /// Pure browsing — moves through the deck without deciding anything. Distinct
     /// from undo (top-left, in the toolbar), which reverts an actual decision.
     private func navButton(systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        let label = systemName == "arrow.left" ? "Go back to previous photo" : "Skip to next photo"
+        return Button(action: action) {
             Image(systemName: systemName)
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(theme.foreground)
                 .frame(width: 46, height: 46)
                 .background(theme.foreground.opacity(0.12), in: Circle())
         }
+        .accessibilityLabel(label)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.3)
     }
@@ -272,16 +313,16 @@ struct SwipeDeckView: View {
             .padding(24)
     }
 
-    private func dragGesture(for asset: PHAsset) -> some Gesture {
+    private func dragGesture(for asset: PHAsset, viewModel: SwipeDeckViewModel) -> some Gesture {
         DragGesture()
             .onChanged { value in
                 dragOffset = value.translation
             }
             .onEnded { value in
                 if value.translation.width > swipeThreshold {
-                    commit(.keep)
+                    commit(.keep, viewModel: viewModel)
                 } else if value.translation.width < -swipeThreshold {
-                    commit(.pass)
+                    commit(.pass, viewModel: viewModel)
                 } else {
                     withAnimation(.spring()) { dragOffset = .zero }
                 }
@@ -290,18 +331,18 @@ struct SwipeDeckView: View {
 
     /// Set from the rating badge's picker — a direct override, distinct from a
     /// swipe, so it gets its own scale/fade transition rather than a fly-out.
-    private func setManualRating(_ rating: Int, on asset: PHAsset) {
-        let feedback = UIImpactFeedbackGenerator(style: .medium)
-        feedback.impactOccurred()
+    private func setManualRating(_ rating: Int, on asset: PHAsset, viewModel: SwipeDeckViewModel) {
+        hapticFeedback.impactOccurred()
         withAnimation(.easeOut(duration: 0.25)) {
             viewModel.setManualRating(rating, for: asset)
         }
     }
 
-    private func commit(_ direction: SwipeDirection) {
-        guard let asset = viewModel.topAsset else { return }
-        let feedback = UIImpactFeedbackGenerator(style: .medium)
-        feedback.impactOccurred()
+    private func commit(_ direction: SwipeDirection, viewModel: SwipeDeckViewModel) {
+        guard let asset = viewModel.topAsset, !isCommittingSwipe else { return }
+        isCommittingSwipe = true
+
+        hapticFeedback.impactOccurred()
 
         let flyOutDuration = 0.25
         let flyOut: CGFloat = direction == .keep ? 600 : -600
@@ -314,6 +355,7 @@ struct SwipeDeckView: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 dragOffset = .zero
+                isCommittingSwipe = false
             }
         }
     }

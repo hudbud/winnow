@@ -31,7 +31,16 @@ final class PhotoLibraryService {
     /// of the card's real (slightly padded) size, which keeps this single value valid
     /// regardless of exact layout.
     static let cardTargetSize: CGSize = {
-        let bounds = UIScreen.main.bounds
+        // Use a window scene's bounds instead of UIScreen.main (deprecated).
+        // Fall back to main screen if no window is available at init time.
+        let bounds: CGRect
+        if let window = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first?.windows.first {
+            bounds = window.bounds
+        } else {
+            bounds = UIScreen.main.bounds
+        }
         let scale = UIScreen.main.scale
         return CGSize(width: bounds.width * scale, height: bounds.height * scale)
     }()
@@ -174,8 +183,11 @@ final class PhotoLibraryService {
             options.isNetworkAccessAllowed = true
             var didResume = false
             PHImageManager.default().requestLivePhoto(for: asset, targetSize: targetSize, contentMode: .aspectFit, options: options) { livePhoto, info in
+                guard !didResume else { return }
                 let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                if !isDegraded, !didResume {
+                let error = info?[PHImageErrorKey] as? Error
+                // Resume on non-degraded delivery OR on error/cancellation to avoid leaking
+                if !isDegraded || error != nil {
                     didResume = true
                     continuation.resume(returning: livePhoto)
                 }

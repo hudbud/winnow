@@ -17,6 +17,7 @@ enum SwipeDirection {
 /// - Swipe left (pass): rating stays unchanged if already > N, otherwise becomes N.
 /// - Photos already above N flow through the deck but are "locked" — the swipe is decorative.
 @Observable
+@MainActor
 final class SwipeDeckViewModel {
     private(set) var session: Session
     let allAssets: [PHAsset]
@@ -54,16 +55,25 @@ final class SwipeDeckViewModel {
     /// caching ones that fell behind instead of only ever adding more as the deck advances.
     private var cachedAssets: [PHAsset] = []
 
-    init(session: Session, allAssets: [PHAsset], library: PhotoLibraryService, context: ModelContext) {
+    private init(session: Session, allAssets: [PHAsset], library: PhotoLibraryService, context: ModelContext) {
         self.session = session
         self.allAssets = allAssets
         self.library = library
         self.context = context
         self.pass = session.currentPass
-        loadRatingCache()
-        loadReviewedCache()
-        rebuildQueue()
-        prefetch()
+    }
+
+    /// Async factory to move the expensive SwiftData fetch + queue rebuild off the main
+    /// thread during navigation push. The init above is now private — call this instead.
+    static func create(session: Session, allAssets: [PHAsset], library: PhotoLibraryService, context: ModelContext) async -> SwipeDeckViewModel {
+        let vm = SwipeDeckViewModel(session: session, allAssets: allAssets, library: library, context: context)
+        await MainActor.run {
+            vm.loadRatingCache()
+            vm.loadReviewedCache()
+            vm.rebuildQueue()
+            vm.prefetch()
+        }
+        return vm
     }
 
     deinit {
@@ -97,12 +107,20 @@ final class SwipeDeckViewModel {
     }
 
     private func loadRatingCache() {
+        // Fetch ALL PhotoRating rows (the table is small — one row per rated photo)
+        // instead of building a giant IN clause from every asset in the album. For
+        // Recents-sized albums (10k+), the predicate-based approach would exceed
+        // SQLite's limits and silently fail, leaving the cache empty.
+        let descriptor = FetchDescriptor<PhotoRating>()
+        let allRows = (try? context.fetch(descriptor)) ?? []
         let identifiers = Set(allAssets.map(\.localIdentifier))
-        let descriptor = FetchDescriptor<PhotoRating>(
-            predicate: #Predicate { identifiers.contains($0.assetIdentifier) }
+        // Filter to this album's assets in memory — fast since allRows is O(rated count),
+        // not O(album size), and rated count is typically << album size.
+        ratingCache = Dictionary(
+            uniqueKeysWithValues: allRows
+                .filter { identifiers.contains($0.assetIdentifier) }
+                .map { ($0.assetIdentifier, $0.rating) }
         )
-        let rows = (try? context.fetch(descriptor)) ?? []
-        ratingCache = Dictionary(uniqueKeysWithValues: rows.map { ($0.assetIdentifier, $0.rating) })
     }
 
     private func loadReviewedCache() {
@@ -304,7 +322,10 @@ final class SwipeDeckViewModel {
     // MARK: - Prefetch
 
     private func prefetch() {
-        let ahead = Array(queue.prefix(10))
+        // Reduced from 10 to 5 to keep memory footprint lower — full-screen 3× images
+        // are ~12–15 MB each, so 10 prefetched is ~150 MB. 5 is still far ahead of
+        // swipe speed but keeps total cache under ~80 MB.
+        let ahead = Array(queue.prefix(5))
         let aheadIdentifiers = Set(ahead.map(\.localIdentifier))
         let noLongerNeeded = cachedAssets.filter { !aheadIdentifiers.contains($0.localIdentifier) }
         if !noLongerNeeded.isEmpty {
@@ -312,5 +333,14 @@ final class SwipeDeckViewModel {
         }
         library.startCaching(ahead, targetSize: PhotoLibraryService.cardTargetSize)
         cachedAssets = ahead
+    }
+
+    func handleMemoryWarning() {
+        // Called from the deck view when system posts a memory warning. Drop all
+        // prefetch cache and re-prefetch just the immediate window — better to hitch
+        // briefly than get jetsam-killed.
+        library.stopCachingAll()
+        cachedAssets = []
+        prefetch()
     }
 }

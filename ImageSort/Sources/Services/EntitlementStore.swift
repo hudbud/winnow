@@ -10,6 +10,7 @@ import StoreKit
 /// this is a self-reported honor-system checkbox after showing the native prompt,
 /// never a hard requirement on its own.
 @Observable
+@MainActor
 final class EntitlementStore {
     static let shared = EntitlementStore()
 
